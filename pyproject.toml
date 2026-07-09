@@ -1,0 +1,15 @@
+[project]
+name = "python-tut"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "dotenv>=0.9.9",
+    "fastapi>=0.139.0",
+    "pydantic>=2.13.4",
+    "pydantic-settings>=2.14.2",
+    "pyright>=1.1.411",
+    "ruff>=0.15.20",
+    "unicorn>=2.1.4",
+]

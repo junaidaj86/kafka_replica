@@ -1,0 +1,7 @@
+{
+  "name": "test-topic",
+  "partition_count": 3,
+  "replication_factor": 1,
+  "retention_ms": 60000,
+  "retention_bytes": 1048576
+}
