@@ -6,7 +6,7 @@ from backend.app.broker.topic import Topic
 
 class TopicStore:
     METADATA_FILE = "topic_metadata.json"
-
+    INITIAL_SEGMENT_FILE = "00000000000000000000.log"
     def __init__(self, base_path: Path):
         if base_path is None:
             raise ValueError("Base path is not set.")
@@ -31,8 +31,10 @@ class TopicStore:
         with metadata_path.open("w", encoding="utf-8") as file:
             json.dump(metadata, file, indent=2)
         for partition_id in range(topic.partition_count):
-            partition_path = topic_path / f"partition-{partition_id}.log"
-            partition_path.touch()
+            partition_path = topic_path / f"partition-{partition_id}"
+            partition_path.mkdir(parents=True)
+            segment_path = partition_path / self.INITIAL_SEGMENT_FILE
+            segment_path.touch()
         return topic
     
     def get_topic(self, topic_name: str) -> Topic:
@@ -56,13 +58,3 @@ class TopicStore:
             retention_bytes=metadata["retention_bytes"],
         )   
     
-    def validate_topic_metadata(self, topic: Topic) -> bool:
-        if topic.partition_count <= 0:
-            return False,
-        if topic.replication_factor <= 0:
-            return False
-        if topic.retention_ms <= 0:
-            return False
-        if topic.retention_bytes <= 0:
-            return False
-        return True
