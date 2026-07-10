@@ -20,4 +20,3 @@ class Topic:
         self.replication_factor = replication_factor
         self.retention_ms = retention_ms
         self.retention_bytes = retention_bytes
-    

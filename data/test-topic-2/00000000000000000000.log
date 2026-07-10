@@ -1,0 +1,15 @@
+{"offset": 0, "key": "key2", "value": "value2", "timestamp": "2026-07-10T23:27:05.685016"}
+{"offset": 1, "key": "key3", "value": "value3", "timestamp": "2026-07-10T23:27:05.685188"}
+{"offset": 2, "key": "key5", "value": "value5", "timestamp": "2026-07-10T23:27:05.685564"}
+{"offset": 3, "key": "key2", "value": "value2", "timestamp": "2026-07-10T23:33:27.025586"}
+{"offset": 4, "key": "key3", "value": "value3", "timestamp": "2026-07-10T23:33:27.025821"}
+{"offset": 5, "key": "key5", "value": "value5", "timestamp": "2026-07-10T23:33:27.026238"}
+{"offset": 6, "key": "key2", "value": "value2", "timestamp": "2026-07-10T23:35:44.738944"}
+{"offset": 7, "key": "key3", "value": "value3", "timestamp": "2026-07-10T23:35:44.739230"}
+{"offset": 8, "key": "key5", "value": "value5", "timestamp": "2026-07-10T23:35:44.739598"}
+{"offset": 9, "key": "key2", "value": "value2", "timestamp": "2026-07-11T00:00:44.198970"}
+{"offset": 10, "key": "key3", "value": "value3", "timestamp": "2026-07-11T00:00:44.199219"}
+{"offset": 11, "key": "key5", "value": "value5", "timestamp": "2026-07-11T00:00:44.199597"}
+{"offset": 12, "key": "key2", "value": "value2", "timestamp": "2026-07-11T00:01:45.727556"}
+{"offset": 13, "key": "key3", "value": "value3", "timestamp": "2026-07-11T00:01:45.727849"}
+{"offset": 14, "key": "key5", "value": "value5", "timestamp": "2026-07-11T00:01:45.728228"}
