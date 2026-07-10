@@ -3,3 +3,5 @@
 {"offset": 2, "key": "key4", "value": "value4", "timestamp": "2026-07-10T23:35:44.739391"}
 {"offset": 3, "key": "key4", "value": "value4", "timestamp": "2026-07-11T00:00:44.199373"}
 {"offset": 4, "key": "key4", "value": "value4", "timestamp": "2026-07-11T00:01:45.728006"}
+{"offset": 5, "key": "key4", "value": "value4", "timestamp": "2026-07-11T00:16:56.842998"}
+{"offset": 6, "key": "key4", "value": "value4", "timestamp": "2026-07-11T00:33:54.191508"}

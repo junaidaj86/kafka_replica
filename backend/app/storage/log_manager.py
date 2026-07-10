@@ -3,9 +3,8 @@ from pathlib import Path
 from backend.app.storage.segment import Segment
 from backend.app.storage.partition_log import PartitionLog
 
-class LogManager:
-    INITIAL_SEGMENT_FILE = "00000000000000000000.log"
 
+class LogManager:
     def __init__(self, base_path: Path):
         if base_path is None:
             raise ValueError("Base path is not set.")
@@ -15,11 +14,7 @@ class LogManager:
         self._validate_partition_request(topic_name, partition_id)
         self._validate_message(message)
         partition_log = self.get_partition_log(topic_name, partition_id)
-        segment: Segment = partition_log.active_segment()
-        next_offset = segment.get_next_offset()
-        message.offset = next_offset
-        segment.append(message)
-        return next_offset
+        return partition_log.append(message)
 
     def read_from_offset(
         self, topic_name: str, partition_id: int, offset: int, max_records: int = 100
@@ -29,8 +24,7 @@ class LogManager:
         if max_records <= 0:
             raise ValueError("max_records must be greater than zero.")
         partition_log = self.get_partition_log(topic_name, partition_id)
-        segment: Segment = partition_log.active_segment()
-        return segment.read_from_offset(offset, max_records)
+        return partition_log.read_from_offset(offset=offset, max_records=max_records)
 
     def get_partition_directory(self, topic_name: str, partition_id: int) -> Path:
         self._validate_partition_request(topic_name, partition_id)
@@ -56,7 +50,7 @@ class LogManager:
         if message.timestamp is None:
             raise ValueError("Message timestamp must not be None.")
 
-    def get_partition_log(self, topic_name: str, partition_id: int)-> PartitionLog:
+    def get_partition_log(self, topic_name: str, partition_id: int) -> PartitionLog:
         directory = self.get_partition_directory(topic_name, partition_id)
         return PartitionLog(
             topic_name=topic_name,

@@ -13,3 +13,9 @@
 {"offset": 12, "key": "key2", "value": "value2", "timestamp": "2026-07-11T00:01:45.727556"}
 {"offset": 13, "key": "key3", "value": "value3", "timestamp": "2026-07-11T00:01:45.727849"}
 {"offset": 14, "key": "key5", "value": "value5", "timestamp": "2026-07-11T00:01:45.728228"}
+{"offset": 15, "key": "key2", "value": "value2", "timestamp": "2026-07-11T00:16:56.842529"}
+{"offset": 16, "key": "key3", "value": "value3", "timestamp": "2026-07-11T00:16:56.842816"}
+{"offset": 17, "key": "key5", "value": "value5", "timestamp": "2026-07-11T00:16:56.843341"}
+{"offset": 18, "key": "key2", "value": "value2", "timestamp": "2026-07-11T00:33:54.191032"}
+{"offset": 19, "key": "key3", "value": "value3", "timestamp": "2026-07-11T00:33:54.191340"}
+{"offset": 20, "key": "key5", "value": "value5", "timestamp": "2026-07-11T00:33:54.191776"}
