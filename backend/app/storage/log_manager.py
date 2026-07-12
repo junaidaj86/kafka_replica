@@ -5,10 +5,23 @@ from backend.app.storage.partition_log import PartitionLog
 
 
 class LogManager:
-    def __init__(self, base_path: Path):
+    def __init__(
+        self,
+        base_path: Path,
+        segment_size: int = 1_073_741_824,
+        index_interval_bytes: int = 4096,
+    ):
         if base_path is None:
             raise ValueError("Base path is not set.")
+        if segment_size <= 0:
+            raise ValueError("Segment size must be greater than zero.")
+
+        if index_interval_bytes <= 0:
+            raise ValueError("index_interval_bytes must be greater than zero.")
         self.base_path = base_path
+        self.segment_size = segment_size
+        self.logs: dict[tuple[str, int], PartitionLog] = {}
+        self.index_interval_bytes = index_interval_bytes
 
     def append(self, topic_name: str, partition_id: int, message: Message) -> int:
         self._validate_partition_request(topic_name, partition_id)
@@ -51,9 +64,14 @@ class LogManager:
             raise ValueError("Message timestamp must not be None.")
 
     def get_partition_log(self, topic_name: str, partition_id: int) -> PartitionLog:
-        directory = self.get_partition_directory(topic_name, partition_id)
-        return PartitionLog(
-            topic_name=topic_name,
-            partition_id=partition_id,
-            directory=directory,
-        )
+        key = (topic_name, partition_id)
+        if key not in self.logs:
+            directory = self.get_partition_directory(topic_name, partition_id)
+            self.logs[key] = PartitionLog(
+                topic_name=topic_name,
+                partition_id=partition_id,
+                directory=directory,
+                segment_size=self.segment_size,
+                index_interval_bytes=self.index_interval_bytes,
+            )
+        return self.logs[key]

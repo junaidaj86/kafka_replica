@@ -4,18 +4,31 @@ from backend.app.broker.message import Message
 
 
 class PartitionLog:
-    def __init__(self, topic_name: str, partition_id: int, directory: Path):
+    def __init__(
+        self,
+        topic_name: str,
+        partition_id: int,
+        directory: Path,
+        segment_size: int,
+        index_interval_bytes: int,
+    ):
         if not topic_name or not topic_name.strip():
             raise ValueError("Topic name must not be empty.")
 
         if partition_id < 0:
             raise ValueError("Partition id must not be negative.")
 
+        if segment_size <= 0:
+            raise ValueError("Segment size cannot be zero or less")
+        if index_interval_bytes <= 0:
+            raise ValueError("index_interval_bytes must be greater than zero.")
         if not directory.exists() or not directory.is_dir():
             raise ValueError(f"Partition directory '{directory}' does not exist.")
-        self.topic_name = topic_name
+        self.topic_name = topic_name.strip()
         self.partition_id = partition_id
         self.directory = directory
+        self.segment_size = segment_size
+        self.index_interval_bytes = index_interval_bytes
         self.segments = self._load_segments()
 
     def _load_segments(self) -> list[Segment]:
@@ -29,6 +42,7 @@ class PartitionLog:
                 Segment(
                     base_offset=base_offset,
                     file_path=log_file,
+                    index_interval_bytes=self.index_interval_bytes,
                 )
             )
         segments.sort(key=lambda segment: segment.base_offset)
@@ -40,9 +54,15 @@ class PartitionLog:
         return self.segments[-1]
 
     def find_segment_for_offset(self, offset: int) -> Segment:
+        ### 0000005000, 0000006000, 0000007000
         if offset < 0:
             raise ValueError("Offset must not be negative.")
         selected = self.segments[0]
+        if offset < selected.base_offset:
+            raise ValueError(
+                f"Offset {offset} is earlier than the earliest available "
+                f"offset {selected.base_offset}."
+            )
         for segment in self.segments:
             if segment.base_offset <= offset:
                 selected = segment
@@ -54,6 +74,9 @@ class PartitionLog:
 
         segment = self.active_segment()
         next_offset = segment.get_next_offset()
+        if segment.should_roll(self.segment_size):
+            self.roll(next_offset)
+            segment = self.active_segment()
         message.offset = next_offset
         segment.append(message)
         return next_offset
@@ -87,8 +110,25 @@ class PartitionLog:
             )
 
             messages.extend(segment_messages)
-
+            if len(messages) >= max_records:
+                break
             if segment_messages:
                 current_offset = segment_messages[-1].offset + 1
 
         return messages
+
+    def roll(self, base_offset: int) -> Segment:
+        if base_offset < 0:
+            raise ValueError("Base offset must not be negative.")
+        segment_path = self.directory / f"{base_offset:020d}.log"
+        if segment_path.exists():
+            raise ValueError(f"Segment with base offset {base_offset} already exists.")
+        segment_path.touch()
+        segment = Segment(
+            base_offset=base_offset,
+            file_path=segment_path,
+            index_interval_bytes=self.index_interval_bytes,
+        )
+        self.segments.append(segment)
+        self.segments.sort(key=lambda item: item.base_offset)
+        return segment
