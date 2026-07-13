@@ -15,11 +15,11 @@ def main() -> None:
 
     topic_name = "test-topic"
     partition_count = 3
-    message_count = 12
+    initial_message_count = 12
 
     data_path = Path(__file__).parent / "data"
 
-    # Test-only cleanup: start with an empty storage directory.
+    # Clean only before the initial broker startup.
     if data_path.exists():
         shutil.rmtree(data_path)
 
@@ -27,15 +27,15 @@ def main() -> None:
 
     topic_store = TopicStore(base_path=data_path)
 
-    # Small value used deliberately to trigger segment rolling quickly.
-    log_manager = LogManager(
+    first_log_manager = LogManager(
         base_path=data_path,
-        segment_size=5000,
+        segment_size=1_500,
+        index_interval_bytes=500,
     )
 
-    broker = Broker(
+    first_broker = Broker(
         topic_store=topic_store,
-        log_store=log_manager,
+        log_store=first_log_manager,
     )
 
     topic = Topic(
@@ -46,128 +46,175 @@ def main() -> None:
         retention_bytes=1_048_576,
     )
 
-    broker.create_topic(topic)
+    first_broker.create_topic(topic)
 
-    print("\n==============================")
-    print("Testing LogManager Cache")
-    print("==============================")
-
-    partition_log_1 = log_manager.get_partition_log(
-        topic_name="test-topic",
-        partition_id=0,
-    )
-
-    partition_log_2 = log_manager.get_partition_log(
-        topic_name="test-topic",
-        partition_id=0,
-    )
-
-    print(f"Object 1 id : {id(partition_log_1)}")
-    print(f"Object 2 id : {id(partition_log_2)}")
-
-    if partition_log_1 is partition_log_2:
-        print("PASS: Same PartitionLog instance reused.")
-    else:
-        print("FAIL: Different PartitionLog instances created.")
-
-    print(f"Cached PartitionLogs: {len(log_manager.logs)}")
-
-    print("Current cache:")
-
-    for key, value in log_manager.logs.items():
-        print(f"{key} -> PartitionLog(id={id(value)})")
-
-    producer = Producer(
-        broker=broker,
+    first_producer = Producer(
+        broker=first_broker,
         partitioner=HashPartitioner(),
     )
 
-    produced_offsets: list[int] = []
+    print("\nProducing before restart...")
 
-    print("\nProducing messages...")
+    produced_offsets_before_restart: list[int] = []
 
-    # The same key ensures that every message is routed to the same partition.
-    for index in range(message_count):
-        offset = producer.produce(
+    for index in range(initial_message_count):
+        offset = first_producer.produce(
             topic_name=topic_name,
             key="customer-123",
-            value=f"message-{index}-" + ("x" * 200),
+            value=f"before-restart-{index}-" + ("x" * 200),
         )
 
-        produced_offsets.append(offset)
-
-        print(f"Produced message-{index}: offset={offset}")
-
-    print("\nInspecting partition directories...")
+        produced_offsets_before_restart.append(offset)
+        print(f"Produced before restart: offset={offset}")
 
     populated_partition_id: int | None = None
 
     for partition_id in range(partition_count):
         partition_directory = data_path / f"{topic_name}-{partition_id}"
 
-        segment_files = sorted(partition_directory.glob("*.log"))
-
-        print(f"\nPartition {partition_id}:")
-
-        for segment_file in segment_files:
-            file_size = segment_file.stat().st_size
-
-            print(f"  {segment_file.name} size={file_size} bytes")
-
-            if file_size > 0:
-                populated_partition_id = partition_id
+        if any(
+            segment_file.stat().st_size > 0
+            for segment_file in partition_directory.glob("*.log")
+        ):
+            populated_partition_id = partition_id
+            break
 
     if populated_partition_id is None:
         raise RuntimeError("No populated partition was found.")
 
-    populated_partition_directory = data_path / f"{topic_name}-{populated_partition_id}"
-
-    rolled_segments = sorted(populated_partition_directory.glob("*.log"))
-
-    print(f"\nMessages were written to partition {populated_partition_id}.")
-
-    print(f"Number of segment files: {len(rolled_segments)}")
-
-    assert len(rolled_segments) > 1, (
-        "Segment rollover did not occur. Reduce segment_size or increase message size."
+    original_partition_log = first_log_manager.get_partition_log(
+        topic_name=topic_name,
+        partition_id=populated_partition_id,
     )
 
-    consumer = Consumer(
-        broker=broker,
+    original_active_segment = original_partition_log.active_segment()
+
+    bytes_before_restart = (
+        original_active_segment.bytes_since_last_index
+    )
+
+    active_segment_before_restart = (
+        original_active_segment.file_path.name
+    )
+
+    print("\nBefore restart:")
+    print(f"Partition: {populated_partition_id}")
+    print(f"Active segment: {active_segment_before_restart}")
+    print(
+        "bytes_since_last_index: "
+        f"{bytes_before_restart}"
+    )
+
+    # ------------------------------------------------------------------
+    # Simulated broker restart
+    # ------------------------------------------------------------------
+    print("\n==============================")
+    print("Simulating Broker Restart")
+    print("==============================")
+
+    # Do not delete any files.
+    # Create completely new runtime objects using the same data directory.
+    recovered_topic_store = TopicStore(
+        base_path=data_path,
+    )
+
+    recovered_log_manager = LogManager(
+        base_path=data_path,
+        segment_size=1_500,
+        index_interval_bytes=500,
+    )
+
+    recovered_broker = Broker(
+        topic_store=recovered_topic_store,
+        log_store=recovered_log_manager,
+    )
+
+    recovered_producer = Producer(
+        broker=recovered_broker,
+        partitioner=HashPartitioner(),
+    )
+
+    recovered_partition_log = (
+        recovered_log_manager.get_partition_log(
+            topic_name=topic_name,
+            partition_id=populated_partition_id,
+        )
+    )
+
+    recovered_active_segment = (
+        recovered_partition_log.active_segment()
+    )
+
+    bytes_after_restart = (
+        recovered_active_segment.bytes_since_last_index
+    )
+
+    active_segment_after_restart = (
+        recovered_active_segment.file_path.name
+    )
+
+    print("\nAfter restart:")
+    print(f"Active segment: {active_segment_after_restart}")
+    print(
+        "bytes_since_last_index: "
+        f"{bytes_after_restart}"
+    )
+
+    assert (
+        active_segment_before_restart
+        == active_segment_after_restart
+    ), "Recovered active segment does not match."
+
+    assert (
+        bytes_before_restart
+        == bytes_after_restart
+    ), "bytes_since_last_index was not recovered correctly."
+
+    expected_next_offset = (
+        produced_offsets_before_restart[-1] + 1
+    )
+
+    print("\nProducing after restart...")
+
+    next_offset = recovered_producer.produce(
+        topic_name=topic_name,
+        key="customer-123",
+        value="after-restart-message-" + ("y" * 200),
+    )
+
+    print(f"Produced after restart: offset={next_offset}")
+
+    assert next_offset == expected_next_offset, (
+        f"Expected offset {expected_next_offset}, "
+        f"but received {next_offset}."
+    )
+
+    recovered_consumer = Consumer(
+        broker=recovered_broker,
         topic_name=topic_name,
         max_records=100,
     )
 
-    print("\nConsuming messages...")
-
-    consumed_messages = consumer.poll()
-
-    for message in consumed_messages:
-        print(
-            f"Consumed: "
-            f"offset={message.offset}, "
-            f"key={message.key}, "
-            f"value={message.value[:30]}..."
-        )
+    consumed_messages = recovered_consumer.poll()
 
     consumed_offsets = [
-        message.offset for message in consumed_messages if message.key == "customer-123"
+        message.offset
+        for message in consumed_messages
+        if message.key == "customer-123"
     ]
 
-    expected_offsets = list(range(message_count))
-
-    print("\nVerification:")
-    print(f"Produced offsets: {produced_offsets}")
-    print(f"Consumed offsets: {consumed_offsets}")
-    print(f"Segment files: {[path.name for path in rolled_segments]}")
-
-    assert produced_offsets == expected_offsets, "Produced offsets are not continuous."
-
-    assert consumed_offsets == expected_offsets, (
-        "Consumer did not read all messages across segments."
+    expected_offsets = list(
+        range(initial_message_count + 1)
     )
 
-    print("\nSegment rollover test passed successfully.")
+    print("\nConsumed offsets after restart:")
+    print(consumed_offsets)
+
+    assert consumed_offsets == expected_offsets, (
+        "Records before and after restart were not read correctly."
+    )
+
+    print("\nBroker restart recovery test passed successfully.")
 
 
 if __name__ == "__main__":

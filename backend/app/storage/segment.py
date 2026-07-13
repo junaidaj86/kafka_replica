@@ -1,10 +1,15 @@
+import io
 import json
+import struct
 from pathlib import Path
 
 from backend.app.broker.message import Message
 
 
 class Segment:
+    INDEX_ENTRY_FORMAT = ">II"
+    INDEX_ENTRY_SIZE = struct.calcsize(INDEX_ENTRY_FORMAT)
+
     def __init__(
         self,
         base_offset: int,
@@ -27,16 +32,16 @@ class Segment:
         self.index_path = file_path.with_suffix(".index")
         self.index_interval_bytes = index_interval_bytes
 
-        # TODO: Recover this value from the existing index and log
-        # when implementing broker-startup recovery.
-        self.bytes_since_last_index = 0
-
         if not self.file_path.exists():
             raise ValueError(
                 f"Segment log file '{self.file_path}' does not exist."
             )
 
-        self.index_path.touch(exist_ok=True)
+        self.recover_index()
+
+        self.bytes_since_last_index = (
+            self._recover_bytes_since_last_index()
+        )
 
     def append(self, message: Message) -> None:
         if message is None:
@@ -103,9 +108,14 @@ class Segment:
                 if not raw_line.strip():
                     continue
 
-                record = json.loads(
-                    raw_line.decode("utf-8")
-                )
+                try:
+                    record = json.loads(
+                        raw_line.decode("utf-8")
+                    )
+                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    raise ValueError(
+                        f"Corrupt log record in '{self.file_path}'."
+                    ) from exc
 
                 if record["offset"] < offset:
                     continue
@@ -120,7 +130,10 @@ class Segment:
         return messages
 
     def get_next_offset(self) -> int:
-        with self.file_path.open("r", encoding="utf-8") as file:
+        with self.file_path.open(
+            "r",
+            encoding="utf-8",
+        ) as file:
             lines = [
                 line.strip()
                 for line in file
@@ -130,20 +143,31 @@ class Segment:
         if not lines:
             return self.base_offset
 
-        last_record = json.loads(lines[-1])
+        try:
+            last_record = json.loads(lines[-1])
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"Corrupt final record in '{self.file_path}'."
+            ) from exc
 
         return last_record["offset"] + 1
 
     def size_in_bytes(self) -> int:
         return self.file_path.stat().st_size
 
-    def should_roll(self, max_segment_bytes: int) -> bool:
+    def should_roll(
+        self,
+        max_segment_bytes: int,
+    ) -> bool:
         if max_segment_bytes <= 0:
             raise ValueError(
                 "max_segment_bytes must be greater than zero."
             )
 
-        return self.size_in_bytes() >= max_segment_bytes
+        return (
+            self.size_in_bytes()
+            >= max_segment_bytes
+        )
 
     def lookup_position(self, offset: int) -> int:
         if offset < self.base_offset:
@@ -156,52 +180,210 @@ class Segment:
             offset - self.base_offset
         )
 
+        index_size = self.index_path.stat().st_size
+
+        if index_size == 0:
+            return 0
+
+        if index_size % self.INDEX_ENTRY_SIZE != 0:
+            raise ValueError(
+                f"Corrupt index file '{self.index_path}'."
+            )
+
+        entry_count = (
+            index_size // self.INDEX_ENTRY_SIZE
+        )
+
+        low = 0
+        high = entry_count - 1
         selected_position = 0
 
-        with self.index_path.open(
-            "r",
-            encoding="utf-8",
-        ) as index_file:
-            for line in index_file:
-                if not line.strip():
-                    continue
+        with self.index_path.open("rb") as index_file:
+            while low <= high:
+                middle = (low + high) // 2
 
-                entry = json.loads(line)
+                index_file.seek(
+                    middle * self.INDEX_ENTRY_SIZE
+                )
+
+                raw_entry = index_file.read(
+                    self.INDEX_ENTRY_SIZE
+                )
 
                 if (
-                    entry["relative_offset"]
+                    len(raw_entry)
+                    != self.INDEX_ENTRY_SIZE
+                ):
+                    raise ValueError(
+                        f"Corrupt index entry in "
+                        f"'{self.index_path}'."
+                    )
+
+                relative_offset, position = (
+                    struct.unpack(
+                        self.INDEX_ENTRY_FORMAT,
+                        raw_entry,
+                    )
+                )
+
+                if (
+                    relative_offset
                     <= requested_relative_offset
                 ):
-                    selected_position = entry["position"]
+                    selected_position = position
+                    low = middle + 1
                 else:
-                    break
+                    high = middle - 1
 
         return selected_position
+
+    def recover_index(self) -> None:
+        if self.index_path.exists():
+            return
+
+        self.index_path.touch()
+
+        bytes_since_last_index = 0
+
+        with self.file_path.open("rb") as log_file:
+            while True:
+                position = log_file.tell()
+                raw_line = log_file.readline()
+
+                if not raw_line:
+                    break
+
+                if not raw_line.strip():
+                    continue
+
+                try:
+                    record = json.loads(
+                        raw_line.decode("utf-8")
+                    )
+                except (
+                    UnicodeDecodeError,
+                    json.JSONDecodeError,
+                ) as exc:
+                    raise ValueError(
+                        f"Cannot rebuild index because "
+                        f"log file '{self.file_path}' "
+                        f"contains a corrupt record."
+                    ) from exc
+
+                message = Message.from_dict(record)
+
+                if message.offset is None:
+                    raise ValueError(
+                        f"Cannot rebuild index because "
+                        f"a record in '{self.file_path}' "
+                        f"has no offset."
+                    )
+
+                should_add_index = (
+                    position == 0
+                    or bytes_since_last_index
+                    >= self.index_interval_bytes
+                )
+
+                if should_add_index:
+                    self._append_index_entry(
+                        offset=message.offset,
+                        position=position,
+                    )
+                    bytes_since_last_index = 0
+
+                bytes_since_last_index += len(
+                    raw_line
+                )
+
+    def _recover_bytes_since_last_index(
+        self,
+    ) -> int:
+        log_size = self.file_path.stat().st_size
+        index_size = self.index_path.stat().st_size
+
+        if log_size == 0:
+            return 0
+
+        if index_size == 0:
+            return log_size
+
+        if (
+            index_size % self.INDEX_ENTRY_SIZE
+            != 0
+        ):
+            raise ValueError(
+                f"Corrupt index file '{self.index_path}'."
+            )
+
+        with self.index_path.open("rb") as index_file:
+            index_file.seek(
+                -self.INDEX_ENTRY_SIZE,
+                io.SEEK_END,
+            )
+
+            raw_entry = index_file.read(
+                self.INDEX_ENTRY_SIZE
+            )
+
+        if len(raw_entry) != self.INDEX_ENTRY_SIZE:
+            raise ValueError(
+                f"Corrupt final index entry in "
+                f"'{self.index_path}'."
+            )
+
+        _, last_index_position = struct.unpack(
+            self.INDEX_ENTRY_FORMAT,
+            raw_entry,
+        )
+
+        if last_index_position > log_size:
+            raise ValueError(
+                f"Index position {last_index_position} "
+                f"exceeds log size {log_size}."
+            )
+
+        return log_size - last_index_position
 
     def _append_index_entry(
         self,
         offset: int,
         position: int,
     ) -> None:
-        if offset < self.base_offset:
-            raise ValueError(
-                "Offset cannot be lower than segment base offset."
-            )
-
         if position < 0:
             raise ValueError(
-                "Index position must not be negative."
+                "Log position must not be negative."
             )
 
-        index_entry = {
-            "relative_offset": offset - self.base_offset,
-            "position": position,
-        }
+        if offset < self.base_offset:
+            raise ValueError(
+                "Offset cannot be lower than "
+                "segment base offset."
+            )
+
+        relative_offset = (
+            offset - self.base_offset
+        )
+
+        if relative_offset > 0xFFFFFFFF:
+            raise ValueError(
+                "Relative offset exceeds the "
+                "supported index range."
+            )
+
+        if position > 0xFFFFFFFF:
+            raise ValueError(
+                "Log position exceeds the "
+                "supported index range."
+            )
+
+        entry = struct.pack(
+            self.INDEX_ENTRY_FORMAT,
+            relative_offset,
+            position,
+        )
 
         with self.index_path.open(
-            "a",
-            encoding="utf-8",
+            "ab",
         ) as index_file:
-            index_file.write(
-                json.dumps(index_entry) + "\n"
-            )
+            index_file.write(entry)
