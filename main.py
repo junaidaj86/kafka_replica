@@ -10,16 +10,35 @@ from backend.app.storage.log_manager import LogManager
 from backend.app.storage.topic_store import TopicStore
 
 
+def find_populated_partition(
+    data_path: Path,
+    topic_name: str,
+    partition_count: int,
+) -> int:
+    for partition_id in range(partition_count):
+        partition_directory = (
+            data_path / f"{topic_name}-{partition_id}"
+        )
+
+        if any(
+            log_file.stat().st_size > 0
+            for log_file in partition_directory.glob("*.log")
+        ):
+            return partition_id
+
+    raise RuntimeError("No populated partition was found.")
+
+
 def main() -> None:
     print("PyKafka Core starting...")
 
     topic_name = "test-topic"
     partition_count = 3
-    initial_message_count = 12
+    initial_message_count = 20
 
     data_path = Path(__file__).parent / "data"
 
-    # Clean only before the initial broker startup.
+    # Clean only before the first broker startup.
     if data_path.exists():
         shutil.rmtree(data_path)
 
@@ -29,8 +48,8 @@ def main() -> None:
 
     first_log_manager = LogManager(
         base_path=data_path,
-        segment_size=1_500,
-        index_interval_bytes=500,
+        segment_size=2_000,
+        index_interval_bytes=400,
     )
 
     first_broker = Broker(
@@ -53,75 +72,104 @@ def main() -> None:
         partitioner=HashPartitioner(),
     )
 
-    print("\nProducing before restart...")
+    print("\nProducing records before corruption...")
 
-    produced_offsets_before_restart: list[int] = []
+    produced_offsets: list[int] = []
 
     for index in range(initial_message_count):
         offset = first_producer.produce(
             topic_name=topic_name,
             key="customer-123",
-            value=f"before-restart-{index}-" + ("x" * 200),
+            value=f"message-{index}-" + ("x" * 150),
         )
 
-        produced_offsets_before_restart.append(offset)
-        print(f"Produced before restart: offset={offset}")
+        produced_offsets.append(offset)
+        print(f"Produced offset={offset}")
 
-    populated_partition_id: int | None = None
-
-    for partition_id in range(partition_count):
-        partition_directory = data_path / f"{topic_name}-{partition_id}"
-
-        if any(
-            segment_file.stat().st_size > 0
-            for segment_file in partition_directory.glob("*.log")
-        ):
-            populated_partition_id = partition_id
-            break
-
-    if populated_partition_id is None:
-        raise RuntimeError("No populated partition was found.")
-
-    original_partition_log = first_log_manager.get_partition_log(
+    populated_partition_id = find_populated_partition(
+        data_path=data_path,
         topic_name=topic_name,
-        partition_id=populated_partition_id,
+        partition_count=partition_count,
     )
 
-    original_active_segment = original_partition_log.active_segment()
-
-    bytes_before_restart = (
-        original_active_segment.bytes_since_last_index
+    partition_directory = (
+        data_path
+        / f"{topic_name}-{populated_partition_id}"
     )
 
-    active_segment_before_restart = (
-        original_active_segment.file_path.name
+    log_files = sorted(
+        partition_directory.glob("*.log")
     )
 
-    print("\nBefore restart:")
+    index_files = sorted(
+        partition_directory.glob("*.index")
+    )
+
+    if not log_files:
+        raise RuntimeError("No log files were created.")
+
+    if not index_files:
+        raise RuntimeError("No index files were created.")
+
+    # Use the active segment for this recovery test.
+    active_log_path = log_files[-1]
+    active_index_path = active_log_path.with_suffix(".index")
+
+    if not active_index_path.exists():
+        raise RuntimeError(
+            f"Expected index file '{active_index_path}' was not found."
+        )
+
+    valid_index_size = active_index_path.stat().st_size
+
+    print("\nBefore corruption:")
     print(f"Partition: {populated_partition_id}")
-    print(f"Active segment: {active_segment_before_restart}")
-    print(
-        "bytes_since_last_index: "
-        f"{bytes_before_restart}"
+    print(f"Active log: {active_log_path.name}")
+    print(f"Active index: {active_index_path.name}")
+    print(f"Valid index size: {valid_index_size} bytes")
+
+    assert valid_index_size % 8 == 0, (
+        "Index was already structurally invalid before the test."
     )
 
-    # ------------------------------------------------------------------
-    # Simulated broker restart
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------------
+    # Simulate a broker crash during an index-entry write.
+    # A complete entry is 8 bytes, so append only 3 bytes.
+    # ---------------------------------------------------------------
+    print("\nInjecting truncated index bytes...")
+
+    with active_index_path.open("ab") as index_file:
+        index_file.write(b"\x01\x02\x03")
+
+    corrupted_index_size = active_index_path.stat().st_size
+
+    print(
+        f"Corrupted index size: "
+        f"{corrupted_index_size} bytes"
+    )
+    print(
+        f"Remainder: "
+        f"{corrupted_index_size % 8}"
+    )
+
+    assert corrupted_index_size % 8 == 3
+
+    # ---------------------------------------------------------------
+    # Simulate broker restart.
+    # Do not delete data.
+    # ---------------------------------------------------------------
     print("\n==============================")
     print("Simulating Broker Restart")
     print("==============================")
 
-    # Do not delete any files.
-    # Create completely new runtime objects using the same data directory.
     recovered_topic_store = TopicStore(
         base_path=data_path,
     )
 
     recovered_log_manager = LogManager(
         base_path=data_path,
-        segment_size=1_500,
-        index_interval_bytes=500,
+        segment_size=2_000,
+        index_interval_bytes=400,
     )
 
     recovered_broker = Broker(
@@ -129,11 +177,7 @@ def main() -> None:
         log_store=recovered_log_manager,
     )
 
-    recovered_producer = Producer(
-        broker=recovered_broker,
-        partitioner=HashPartitioner(),
-    )
-
+    # Loading the PartitionLog causes Segment construction and recovery.
     recovered_partition_log = (
         recovered_log_manager.get_partition_log(
             topic_name=topic_name,
@@ -145,76 +189,119 @@ def main() -> None:
         recovered_partition_log.active_segment()
     )
 
-    bytes_after_restart = (
-        recovered_active_segment.bytes_since_last_index
+    repaired_index_path = (
+        recovered_active_segment.index_path
     )
 
-    active_segment_after_restart = (
-        recovered_active_segment.file_path.name
+    repaired_index_size = (
+        repaired_index_path.stat().st_size
     )
 
-    print("\nAfter restart:")
-    print(f"Active segment: {active_segment_after_restart}")
+    print("\nAfter recovery:")
+    print(f"Repaired index: {repaired_index_path.name}")
+    print(f"Repaired index size: {repaired_index_size} bytes")
     print(
         "bytes_since_last_index: "
-        f"{bytes_after_restart}"
+        f"{recovered_active_segment.bytes_since_last_index}"
     )
 
-    assert (
-        active_segment_before_restart
-        == active_segment_after_restart
-    ), "Recovered active segment does not match."
-
-    assert (
-        bytes_before_restart
-        == bytes_after_restart
-    ), "bytes_since_last_index was not recovered correctly."
-
-    expected_next_offset = (
-        produced_offsets_before_restart[-1] + 1
+    assert repaired_index_size % 8 == 0, (
+        "Recovered index size is not aligned to 8-byte entries."
     )
 
-    print("\nProducing after restart...")
+    assert repaired_index_size >= valid_index_size, (
+        "Recovered index lost valid entries."
+    )
+
+    # ---------------------------------------------------------------
+    # Verify indexed reads still work after repair.
+    # ---------------------------------------------------------------
+    target_offset = 7
+
+    recovered_messages = (
+        recovered_log_manager.read_from_offset(
+            topic_name=topic_name,
+            partition_id=populated_partition_id,
+            offset=target_offset,
+            max_records=5,
+        )
+    )
+
+    recovered_offsets = [
+        message.offset
+        for message in recovered_messages
+    ]
+
+    expected_recovered_offsets = list(
+        range(target_offset, target_offset + 5)
+    )
+
+    print("\nRead verification:")
+    print(f"Expected: {expected_recovered_offsets}")
+    print(f"Actual:   {recovered_offsets}")
+
+    assert (
+        recovered_offsets
+        == expected_recovered_offsets
+    ), "Indexed reads failed after index repair."
+
+    # ---------------------------------------------------------------
+    # Verify append continues with the correct next offset.
+    # ---------------------------------------------------------------
+    recovered_producer = Producer(
+        broker=recovered_broker,
+        partitioner=HashPartitioner(),
+    )
+
+    expected_next_offset = produced_offsets[-1] + 1
 
     next_offset = recovered_producer.produce(
         topic_name=topic_name,
         key="customer-123",
-        value="after-restart-message-" + ("y" * 200),
+        value="after-index-recovery-" + ("y" * 150),
     )
 
-    print(f"Produced after restart: offset={next_offset}")
+    print("\nAppend verification:")
+    print(f"Expected next offset: {expected_next_offset}")
+    print(f"Actual next offset:   {next_offset}")
 
     assert next_offset == expected_next_offset, (
-        f"Expected offset {expected_next_offset}, "
-        f"but received {next_offset}."
+        "Offset did not continue correctly after recovery."
     )
 
+    # ---------------------------------------------------------------
+    # Verify all messages remain readable.
+    # ---------------------------------------------------------------
     recovered_consumer = Consumer(
         broker=recovered_broker,
         topic_name=topic_name,
         max_records=100,
     )
 
-    consumed_messages = recovered_consumer.poll()
+    all_messages = recovered_consumer.poll()
 
-    consumed_offsets = [
+    all_offsets = [
         message.offset
-        for message in consumed_messages
+        for message in all_messages
         if message.key == "customer-123"
     ]
 
-    expected_offsets = list(
+    expected_all_offsets = list(
         range(initial_message_count + 1)
     )
 
-    print("\nConsumed offsets after restart:")
-    print(consumed_offsets)
+    print("\nComplete-log verification:")
+    print(f"Expected offsets: {expected_all_offsets}")
+    print(f"Actual offsets:   {all_offsets}")
 
-    assert consumed_offsets == expected_offsets, (
-        "Records before and after restart were not read correctly."
+    assert all_offsets == expected_all_offsets, (
+        "Records were lost or duplicated after index recovery."
     )
 
-    print("\nBroker restart recovery test passed successfully.")
+    print(
+        "\nTruncated index recovery test "
+        "passed successfully."
+    )
 
 
 if __name__ == "__main__":

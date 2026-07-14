@@ -36,8 +36,8 @@ class Segment:
             raise ValueError(
                 f"Segment log file '{self.file_path}' does not exist."
             )
-
-        self._recover_bytes_since_last_index()
+        self._recover()
+        
 
         self.bytes_since_last_index = (
             self._recover_bytes_since_last_index()
@@ -515,3 +515,11 @@ class Segment:
     def _rebuild_index_from_scratch(self) -> None:
         self.index_path.unlink(missing_ok=True)
         self.recover_index()
+
+        
+    def _recover(self) -> None:
+        if not self.index_path.exists():
+            self.recover_index()
+            return
+
+        self.repair_truncated_index()
