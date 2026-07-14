@@ -16,9 +16,7 @@ def find_populated_partition(
     partition_count: int,
 ) -> int:
     for partition_id in range(partition_count):
-        partition_directory = (
-            data_path / f"{topic_name}-{partition_id}"
-        )
+        partition_directory = data_path / f"{topic_name}-{partition_id}"
 
         if any(
             log_file.stat().st_size > 0
@@ -92,18 +90,11 @@ def main() -> None:
         partition_count=partition_count,
     )
 
-    partition_directory = (
-        data_path
-        / f"{topic_name}-{populated_partition_id}"
-    )
+    partition_directory = data_path / f"{topic_name}-{populated_partition_id}"
 
-    log_files = sorted(
-        partition_directory.glob("*.log")
-    )
+    log_files = sorted(partition_directory.glob("*.log"))
 
-    index_files = sorted(
-        partition_directory.glob("*.index")
-    )
+    index_files = sorted(partition_directory.glob("*.index"))
 
     if not log_files:
         raise RuntimeError("No log files were created.")
@@ -116,9 +107,7 @@ def main() -> None:
     active_index_path = active_log_path.with_suffix(".index")
 
     if not active_index_path.exists():
-        raise RuntimeError(
-            f"Expected index file '{active_index_path}' was not found."
-        )
+        raise RuntimeError(f"Expected index file '{active_index_path}' was not found.")
 
     valid_index_size = active_index_path.stat().st_size
 
@@ -143,14 +132,8 @@ def main() -> None:
 
     corrupted_index_size = active_index_path.stat().st_size
 
-    print(
-        f"Corrupted index size: "
-        f"{corrupted_index_size} bytes"
-    )
-    print(
-        f"Remainder: "
-        f"{corrupted_index_size % 8}"
-    )
+    print(f"Corrupted index size: {corrupted_index_size} bytes")
+    print(f"Remainder: {corrupted_index_size % 8}")
 
     assert corrupted_index_size % 8 == 3
 
@@ -178,32 +161,21 @@ def main() -> None:
     )
 
     # Loading the PartitionLog causes Segment construction and recovery.
-    recovered_partition_log = (
-        recovered_log_manager.get_partition_log(
-            topic_name=topic_name,
-            partition_id=populated_partition_id,
-        )
+    recovered_partition_log = recovered_log_manager.get_partition_log(
+        topic_name=topic_name,
+        partition_id=populated_partition_id,
     )
 
-    recovered_active_segment = (
-        recovered_partition_log.active_segment()
-    )
+    recovered_active_segment = recovered_partition_log.active_segment()
 
-    repaired_index_path = (
-        recovered_active_segment.index_path
-    )
+    repaired_index_path = recovered_active_segment.index_path
 
-    repaired_index_size = (
-        repaired_index_path.stat().st_size
-    )
+    repaired_index_size = repaired_index_path.stat().st_size
 
     print("\nAfter recovery:")
     print(f"Repaired index: {repaired_index_path.name}")
     print(f"Repaired index size: {repaired_index_size} bytes")
-    print(
-        "bytes_since_last_index: "
-        f"{recovered_active_segment.bytes_since_last_index}"
-    )
+    print(f"bytes_since_last_index: {recovered_active_segment.bytes_since_last_index}")
 
     assert repaired_index_size % 8 == 0, (
         "Recovered index size is not aligned to 8-byte entries."
@@ -218,32 +190,24 @@ def main() -> None:
     # ---------------------------------------------------------------
     target_offset = 7
 
-    recovered_messages = (
-        recovered_log_manager.read_from_offset(
-            topic_name=topic_name,
-            partition_id=populated_partition_id,
-            offset=target_offset,
-            max_records=5,
-        )
+    recovered_messages = recovered_log_manager.read_from_offset(
+        topic_name=topic_name,
+        partition_id=populated_partition_id,
+        offset=target_offset,
+        max_records=5,
     )
 
-    recovered_offsets = [
-        message.offset
-        for message in recovered_messages
-    ]
+    recovered_offsets = [message.offset for message in recovered_messages]
 
-    expected_recovered_offsets = list(
-        range(target_offset, target_offset + 5)
-    )
+    expected_recovered_offsets = list(range(target_offset, target_offset + 5))
 
     print("\nRead verification:")
     print(f"Expected: {expected_recovered_offsets}")
     print(f"Actual:   {recovered_offsets}")
 
-    assert (
-        recovered_offsets
-        == expected_recovered_offsets
-    ), "Indexed reads failed after index repair."
+    assert recovered_offsets == expected_recovered_offsets, (
+        "Indexed reads failed after index repair."
+    )
 
     # ---------------------------------------------------------------
     # Verify append continues with the correct next offset.
@@ -281,14 +245,10 @@ def main() -> None:
     all_messages = recovered_consumer.poll()
 
     all_offsets = [
-        message.offset
-        for message in all_messages
-        if message.key == "customer-123"
+        message.offset for message in all_messages if message.key == "customer-123"
     ]
 
-    expected_all_offsets = list(
-        range(initial_message_count + 1)
-    )
+    expected_all_offsets = list(range(initial_message_count + 1))
 
     print("\nComplete-log verification:")
     print(f"Expected offsets: {expected_all_offsets}")
@@ -298,10 +258,7 @@ def main() -> None:
         "Records were lost or duplicated after index recovery."
     )
 
-    print(
-        "\nTruncated index recovery test "
-        "passed successfully."
-    )
+    print("\nTruncated index recovery test passed successfully.")
 
 
 if __name__ == "__main__":

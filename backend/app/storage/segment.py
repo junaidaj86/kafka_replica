@@ -23,9 +23,7 @@ class Segment:
             raise ValueError("Segment file path must not be None.")
 
         if index_interval_bytes <= 0:
-            raise ValueError(
-                "index_interval_bytes must be greater than zero."
-            )
+            raise ValueError("index_interval_bytes must be greater than zero.")
 
         self.base_offset = base_offset
         self.file_path = file_path
@@ -33,24 +31,17 @@ class Segment:
         self.index_interval_bytes = index_interval_bytes
 
         if not self.file_path.exists():
-            raise ValueError(
-                f"Segment log file '{self.file_path}' does not exist."
-            )
+            raise ValueError(f"Segment log file '{self.file_path}' does not exist.")
         self._recover()
-        
 
-        self.bytes_since_last_index = (
-            self._recover_bytes_since_last_index()
-        )
+        self.bytes_since_last_index = self._recover_bytes_since_last_index()
 
     def append(self, message: Message) -> None:
         if message is None:
             raise ValueError("Message must not be None.")
 
         if message.offset is None:
-            raise ValueError(
-                "Message offset must be assigned before append."
-            )
+            raise ValueError("Message offset must be assigned before append.")
 
         if message.offset < self.base_offset:
             raise ValueError(
@@ -58,17 +49,14 @@ class Segment:
                 f"segment base offset {self.base_offset}."
             )
 
-        encoded_record = (
-            json.dumps(message.to_dict()) + "\n"
-        ).encode("utf-8")
+        encoded_record = (json.dumps(message.to_dict()) + "\n").encode("utf-8")
 
         with self.file_path.open("ab") as log_file:
             position = log_file.tell()
 
             should_add_index = (
                 position == 0
-                or self.bytes_since_last_index
-                >= self.index_interval_bytes
+                or self.bytes_since_last_index >= self.index_interval_bytes
             )
 
             if should_add_index:
@@ -89,14 +77,11 @@ class Segment:
     ) -> list[Message]:
         if offset < self.base_offset:
             raise ValueError(
-                f"Offset {offset} is before segment base offset "
-                f"{self.base_offset}."
+                f"Offset {offset} is before segment base offset {self.base_offset}."
             )
 
         if max_records <= 0:
-            raise ValueError(
-                "max_records must be greater than zero."
-            )
+            raise ValueError("max_records must be greater than zero.")
 
         position = self.lookup_position(offset)
         messages: list[Message] = []
@@ -109,9 +94,7 @@ class Segment:
                     continue
 
                 try:
-                    record = json.loads(
-                        raw_line.decode("utf-8")
-                    )
+                    record = json.loads(raw_line.decode("utf-8"))
                 except (UnicodeDecodeError, json.JSONDecodeError) as exc:
                     raise ValueError(
                         f"Corrupt log record in '{self.file_path}'."
@@ -120,9 +103,7 @@ class Segment:
                 if record["offset"] < offset:
                     continue
 
-                messages.append(
-                    Message.from_dict(record)
-                )
+                messages.append(Message.from_dict(record))
 
                 if len(messages) >= max_records:
                     break
@@ -134,11 +115,7 @@ class Segment:
             "r",
             encoding="utf-8",
         ) as file:
-            lines = [
-                line.strip()
-                for line in file
-                if line.strip()
-            ]
+            lines = [line.strip() for line in file if line.strip()]
 
         if not lines:
             return self.base_offset
@@ -146,9 +123,7 @@ class Segment:
         try:
             last_record = json.loads(lines[-1])
         except json.JSONDecodeError as exc:
-            raise ValueError(
-                f"Corrupt final record in '{self.file_path}'."
-            ) from exc
+            raise ValueError(f"Corrupt final record in '{self.file_path}'.") from exc
 
         return last_record["offset"] + 1
 
@@ -160,25 +135,17 @@ class Segment:
         max_segment_bytes: int,
     ) -> bool:
         if max_segment_bytes <= 0:
-            raise ValueError(
-                "max_segment_bytes must be greater than zero."
-            )
+            raise ValueError("max_segment_bytes must be greater than zero.")
 
-        return (
-            self.size_in_bytes()
-            >= max_segment_bytes
-        )
+        return self.size_in_bytes() >= max_segment_bytes
 
     def lookup_position(self, offset: int) -> int:
         if offset < self.base_offset:
             raise ValueError(
-                f"Offset {offset} is before segment base offset "
-                f"{self.base_offset}."
+                f"Offset {offset} is before segment base offset {self.base_offset}."
             )
 
-        requested_relative_offset = (
-            offset - self.base_offset
-        )
+        requested_relative_offset = offset - self.base_offset
 
         index_size = self.index_path.stat().st_size
 
@@ -186,13 +153,9 @@ class Segment:
             return 0
 
         if index_size % self.INDEX_ENTRY_SIZE != 0:
-            raise ValueError(
-                f"Corrupt index file '{self.index_path}'."
-            )
+            raise ValueError(f"Corrupt index file '{self.index_path}'.")
 
-        entry_count = (
-            index_size // self.INDEX_ENTRY_SIZE
-        )
+        entry_count = index_size // self.INDEX_ENTRY_SIZE
 
         low = 0
         high = entry_count - 1
@@ -202,34 +165,19 @@ class Segment:
             while low <= high:
                 middle = (low + high) // 2
 
-                index_file.seek(
-                    middle * self.INDEX_ENTRY_SIZE
+                index_file.seek(middle * self.INDEX_ENTRY_SIZE)
+
+                raw_entry = index_file.read(self.INDEX_ENTRY_SIZE)
+
+                if len(raw_entry) != self.INDEX_ENTRY_SIZE:
+                    raise ValueError(f"Corrupt index entry in '{self.index_path}'.")
+
+                relative_offset, position = struct.unpack(
+                    self.INDEX_ENTRY_FORMAT,
+                    raw_entry,
                 )
 
-                raw_entry = index_file.read(
-                    self.INDEX_ENTRY_SIZE
-                )
-
-                if (
-                    len(raw_entry)
-                    != self.INDEX_ENTRY_SIZE
-                ):
-                    raise ValueError(
-                        f"Corrupt index entry in "
-                        f"'{self.index_path}'."
-                    )
-
-                relative_offset, position = (
-                    struct.unpack(
-                        self.INDEX_ENTRY_FORMAT,
-                        raw_entry,
-                    )
-                )
-
-                if (
-                    relative_offset
-                    <= requested_relative_offset
-                ):
+                if relative_offset <= requested_relative_offset:
                     selected_position = position
                     low = middle + 1
                 else:
@@ -257,9 +205,7 @@ class Segment:
                     continue
 
                 try:
-                    record = json.loads(
-                        raw_line.decode("utf-8")
-                    )
+                    record = json.loads(raw_line.decode("utf-8"))
                 except (
                     UnicodeDecodeError,
                     json.JSONDecodeError,
@@ -280,9 +226,7 @@ class Segment:
                     )
 
                 should_add_index = (
-                    position == 0
-                    or bytes_since_last_index
-                    >= self.index_interval_bytes
+                    position == 0 or bytes_since_last_index >= self.index_interval_bytes
                 )
 
                 if should_add_index:
@@ -292,9 +236,7 @@ class Segment:
                     )
                     bytes_since_last_index = 0
 
-                bytes_since_last_index += len(
-                    raw_line
-                )
+                bytes_since_last_index += len(raw_line)
 
     def _recover_bytes_since_last_index(
         self,
@@ -308,13 +250,8 @@ class Segment:
         if index_size == 0:
             return log_size
 
-        if (
-            index_size % self.INDEX_ENTRY_SIZE
-            != 0
-        ):
-            raise ValueError(
-                f"Corrupt index file '{self.index_path}'."
-            )
+        if index_size % self.INDEX_ENTRY_SIZE != 0:
+            raise ValueError(f"Corrupt index file '{self.index_path}'.")
 
         with self.index_path.open("rb") as index_file:
             index_file.seek(
@@ -322,15 +259,10 @@ class Segment:
                 io.SEEK_END,
             )
 
-            raw_entry = index_file.read(
-                self.INDEX_ENTRY_SIZE
-            )
+            raw_entry = index_file.read(self.INDEX_ENTRY_SIZE)
 
         if len(raw_entry) != self.INDEX_ENTRY_SIZE:
-            raise ValueError(
-                f"Corrupt final index entry in "
-                f"'{self.index_path}'."
-            )
+            raise ValueError(f"Corrupt final index entry in '{self.index_path}'.")
 
         _, last_index_position = struct.unpack(
             self.INDEX_ENTRY_FORMAT,
@@ -339,8 +271,7 @@ class Segment:
 
         if last_index_position > log_size:
             raise ValueError(
-                f"Index position {last_index_position} "
-                f"exceeds log size {log_size}."
+                f"Index position {last_index_position} exceeds log size {log_size}."
             )
 
         return log_size - last_index_position
@@ -351,31 +282,18 @@ class Segment:
         position: int,
     ) -> None:
         if position < 0:
-            raise ValueError(
-                "Log position must not be negative."
-            )
+            raise ValueError("Log position must not be negative.")
 
         if offset < self.base_offset:
-            raise ValueError(
-                "Offset cannot be lower than "
-                "segment base offset."
-            )
+            raise ValueError("Offset cannot be lower than segment base offset.")
 
-        relative_offset = (
-            offset - self.base_offset
-        )
+        relative_offset = offset - self.base_offset
 
         if relative_offset > 0xFFFFFFFF:
-            raise ValueError(
-                "Relative offset exceeds the "
-                "supported index range."
-            )
+            raise ValueError("Relative offset exceeds the supported index range.")
 
         if position > 0xFFFFFFFF:
-            raise ValueError(
-                "Log position exceeds the "
-                "supported index range."
-            )
+            raise ValueError("Log position exceeds the supported index range.")
 
         entry = struct.pack(
             self.INDEX_ENTRY_FORMAT,
@@ -387,7 +305,7 @@ class Segment:
             "ab",
         ) as index_file:
             index_file.write(entry)
-            
+
     def repair_truncated_index(self) -> None:
         if not self.index_path.exists():
             self.recover_index()
@@ -406,15 +324,11 @@ class Segment:
             self.recover_index()
             return
 
-        last_entry_position = (
-            valid_index_size - self.INDEX_ENTRY_SIZE
-        )
+        last_entry_position = valid_index_size - self.INDEX_ENTRY_SIZE
 
         with self.index_path.open("rb") as index_file:
             index_file.seek(last_entry_position)
-            raw_entry = index_file.read(
-                self.INDEX_ENTRY_SIZE
-            )
+            raw_entry = index_file.read(self.INDEX_ENTRY_SIZE)
 
         if len(raw_entry) != self.INDEX_ENTRY_SIZE:
             self._rebuild_index_from_scratch()
@@ -440,9 +354,7 @@ class Segment:
                 return
 
             try:
-                indexed_record = json.loads(
-                    indexed_raw_line.decode("utf-8")
-                )
+                indexed_record = json.loads(indexed_raw_line.decode("utf-8"))
             except (
                 UnicodeDecodeError,
                 json.JSONDecodeError,
@@ -450,9 +362,7 @@ class Segment:
                 self._rebuild_index_from_scratch()
                 return
 
-            expected_offset = (
-                self.base_offset + relative_offset
-            )
+            expected_offset = self.base_offset + relative_offset
 
             if indexed_record["offset"] != expected_offset:
                 self._rebuild_index_from_scratch()
@@ -464,9 +374,7 @@ class Segment:
         bytes_since_last_index = len(indexed_raw_line)
 
         with self.file_path.open("rb") as log_file:
-            log_file.seek(
-                log_position + len(indexed_raw_line)
-            )
+            log_file.seek(log_position + len(indexed_raw_line))
 
             while True:
                 position = log_file.tell()
@@ -479,9 +387,7 @@ class Segment:
                     continue
 
                 try:
-                    record = json.loads(
-                        raw_line.decode("utf-8")
-                    )
+                    record = json.loads(raw_line.decode("utf-8"))
                 except (
                     UnicodeDecodeError,
                     json.JSONDecodeError,
@@ -495,15 +401,9 @@ class Segment:
                 message = Message.from_dict(record)
 
                 if message.offset is None:
-                    raise ValueError(
-                        f"Record in '{self.file_path}' "
-                        f"has no offset."
-                    )
+                    raise ValueError(f"Record in '{self.file_path}' has no offset.")
 
-                if (
-                    bytes_since_last_index
-                    >= self.index_interval_bytes
-                ):
+                if bytes_since_last_index >= self.index_interval_bytes:
                     self._append_index_entry(
                         offset=message.offset,
                         position=position,
@@ -511,15 +411,72 @@ class Segment:
                     bytes_since_last_index = 0
 
                 bytes_since_last_index += len(raw_line)
-                
+
     def _rebuild_index_from_scratch(self) -> None:
         self.index_path.unlink(missing_ok=True)
         self.recover_index()
 
-        
     def _recover(self) -> None:
         if not self.index_path.exists():
             self.recover_index()
             return
 
-        self.repair_truncated_index()
+        if self.index_path.stat().st_size % self.INDEX_ENTRY_SIZE != 0:
+            self.repair_truncated_index()
+
+        if not self.is_index_valid():
+            self._rebuild_index_from_scratch()
+
+    def is_index_valid(self) -> bool:
+        if not self.index_path.exists():
+            return False
+
+        index_size = self.index_path.stat().st_size
+        log_size = self.file_path.stat().st_size
+
+        if log_size == 0:
+            return index_size == 0
+
+        if index_size == 0:
+            return False
+
+        if index_size % self.INDEX_ENTRY_SIZE != 0:
+            return False
+
+        previous_relative_offset = -1
+        previous_position = -1
+        entry_number = 0
+
+        with self.index_path.open("rb") as index_file:
+            while True:
+                raw_entry = index_file.read(self.INDEX_ENTRY_SIZE)
+
+                if not raw_entry:
+                    break
+
+                if len(raw_entry) != self.INDEX_ENTRY_SIZE:
+                    return False
+
+                relative_offset, position = struct.unpack(
+                    self.INDEX_ENTRY_FORMAT,
+                    raw_entry,
+                )
+
+                if entry_number == 0:
+                    if relative_offset != 0 or position != 0:
+                        return False
+
+                if relative_offset <= previous_relative_offset:
+                    return False
+
+                if position <= previous_position:
+                    return False
+
+                if position >= log_size:
+                    return False
+
+                previous_relative_offset = relative_offset
+                previous_position = position
+                entry_number += 1
+
+        return True
