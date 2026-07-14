@@ -37,7 +37,7 @@ class Segment:
                 f"Segment log file '{self.file_path}' does not exist."
             )
 
-        self.recover_index()
+        self._recover_bytes_since_last_index()
 
         self.bytes_since_last_index = (
             self._recover_bytes_since_last_index()
@@ -387,3 +387,131 @@ class Segment:
             "ab",
         ) as index_file:
             index_file.write(entry)
+            
+    def repair_truncated_index(self) -> None:
+        if not self.index_path.exists():
+            self.recover_index()
+            return
+
+        index_size = self.index_path.stat().st_size
+        remainder = index_size % self.INDEX_ENTRY_SIZE
+
+        if remainder == 0:
+            return
+
+        valid_index_size = index_size - remainder
+
+        if valid_index_size == 0:
+            self.index_path.unlink(missing_ok=True)
+            self.recover_index()
+            return
+
+        last_entry_position = (
+            valid_index_size - self.INDEX_ENTRY_SIZE
+        )
+
+        with self.index_path.open("rb") as index_file:
+            index_file.seek(last_entry_position)
+            raw_entry = index_file.read(
+                self.INDEX_ENTRY_SIZE
+            )
+
+        if len(raw_entry) != self.INDEX_ENTRY_SIZE:
+            self._rebuild_index_from_scratch()
+            return
+
+        relative_offset, log_position = struct.unpack(
+            self.INDEX_ENTRY_FORMAT,
+            raw_entry,
+        )
+
+        log_size = self.file_path.stat().st_size
+
+        if log_position >= log_size:
+            self._rebuild_index_from_scratch()
+            return
+
+        with self.file_path.open("rb") as log_file:
+            log_file.seek(log_position)
+            indexed_raw_line = log_file.readline()
+
+            if not indexed_raw_line:
+                self._rebuild_index_from_scratch()
+                return
+
+            try:
+                indexed_record = json.loads(
+                    indexed_raw_line.decode("utf-8")
+                )
+            except (
+                UnicodeDecodeError,
+                json.JSONDecodeError,
+            ):
+                self._rebuild_index_from_scratch()
+                return
+
+            expected_offset = (
+                self.base_offset + relative_offset
+            )
+
+            if indexed_record["offset"] != expected_offset:
+                self._rebuild_index_from_scratch()
+                return
+
+        with self.index_path.open("r+b") as index_file:
+            index_file.truncate(valid_index_size)
+
+        bytes_since_last_index = len(indexed_raw_line)
+
+        with self.file_path.open("rb") as log_file:
+            log_file.seek(
+                log_position + len(indexed_raw_line)
+            )
+
+            while True:
+                position = log_file.tell()
+                raw_line = log_file.readline()
+
+                if not raw_line:
+                    break
+
+                if not raw_line.strip():
+                    continue
+
+                try:
+                    record = json.loads(
+                        raw_line.decode("utf-8")
+                    )
+                except (
+                    UnicodeDecodeError,
+                    json.JSONDecodeError,
+                ) as exc:
+                    raise ValueError(
+                        f"Cannot repair index because "
+                        f"'{self.file_path}' contains "
+                        f"a corrupt record."
+                    ) from exc
+
+                message = Message.from_dict(record)
+
+                if message.offset is None:
+                    raise ValueError(
+                        f"Record in '{self.file_path}' "
+                        f"has no offset."
+                    )
+
+                if (
+                    bytes_since_last_index
+                    >= self.index_interval_bytes
+                ):
+                    self._append_index_entry(
+                        offset=message.offset,
+                        position=position,
+                    )
+                    bytes_since_last_index = 0
+
+                bytes_since_last_index += len(raw_line)
+                
+    def _rebuild_index_from_scratch(self) -> None:
+        self.index_path.unlink(missing_ok=True)
+        self.recover_index()
