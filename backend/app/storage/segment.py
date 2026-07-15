@@ -2,7 +2,7 @@ import io
 import json
 import struct
 from pathlib import Path
-
+from datetime import datetime, timezone
 from backend.app.broker.message import Message
 
 
@@ -480,3 +480,16 @@ class Segment:
                 entry_number += 1
 
         return True
+
+    def last_modified_ms(self) -> int:
+        return int(self.file_path.stat().st_mtime * 1000)
+
+    def age_ms(self, now_ms: int | None = None) -> int:
+        if now_ms is None:
+            now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+
+        return now_ms - self.last_modified_ms()
+
+    def delete(self) -> None:
+        self.file_path.unlink(missing_ok=True)
+        self.index_path.unlink(missing_ok=True)

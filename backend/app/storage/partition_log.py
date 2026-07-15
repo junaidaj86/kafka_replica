@@ -132,3 +132,68 @@ class PartitionLog:
         self.segments.append(segment)
         self.segments.sort(key=lambda item: item.base_offset)
         return segment
+
+    def delete_expired_segments(
+        self, retention_ms: int, now_ms: int | None = None
+    ) -> list[Segment]:
+        if retention_ms <= 0:
+            raise ValueError("retention_ms must be greater than zero.")
+
+        active_segment = self.active_segment()
+        deleted_segments: list[Segment] = []
+
+        for segment in list(self.segments):
+            if segment is active_segment:
+                continue
+            if segment.age_ms(now_ms) >= retention_ms:
+                segment.delete()
+                self.segments.remove(segment)
+                deleted_segments.append(segment)
+
+        return deleted_segments
+
+    def total_size_in_bytes(self) -> int:
+        return sum(
+            segment.size_in_bytes() + segment.index_path.stat().st_size
+            for segment in self.segments
+        )
+
+    def enforce_retention_bytes(self, retention_bytes: int) -> list[Segment]:
+        if retention_bytes <= 0:
+            raise ValueError("retention_bytes must be greater than zero.")
+
+        deleted_segments: list[Segment] = []
+        active_segment = self.active_segment()
+        current_size = self.total_size_in_bytes()
+
+        for segment in list(self.segments):
+            if current_size <= retention_bytes:
+                break
+
+            if segment is active_segment:
+                continue
+
+            segment_size = segment.size_in_bytes() + segment.index_path.stat().st_size
+            segment.delete()
+            self.segments.remove(segment)
+            deleted_segments.append(segment)
+
+            current_size -= segment_size
+        return deleted_segments
+
+    def apply_retention(
+        self,
+        retention_ms: int,
+        retention_bytes: int,
+        now_ms: int | None = None,
+    ) -> list[Segment]:
+        deleted_by_time = self.delete_expired_segments(
+            retention_ms=retention_ms,
+            now_ms=now_ms,
+        )
+
+        deleted_by_size = self.enforce_retention_bytes(
+            retention_bytes=retention_bytes,
+        )
+
+        return deleted_by_time + deleted_by_size

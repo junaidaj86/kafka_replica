@@ -75,3 +75,20 @@ class LogManager:
                 index_interval_bytes=self.index_interval_bytes,
             )
         return self.logs[key]
+
+    def apply_retention(
+        self,
+        topic_name: str,
+        partition_id: int,
+        retention_ms: int,
+        retention_bytes: int,
+    ) -> list[Segment]:
+        partition_log = self.get_partition_log(
+            topic_name,
+            partition_id,
+        )
+
+        return partition_log.apply_retention(
+            retention_ms=retention_ms,
+            retention_bytes=retention_bytes,
+        )
