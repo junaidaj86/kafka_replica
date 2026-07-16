@@ -1,5 +1,5 @@
 {
-  "name": "test-topic",
+  "name": "orders",
   "partition_count": 3,
   "replication_factor": 1,
   "retention_ms": 60000,
